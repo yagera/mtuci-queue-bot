@@ -22,6 +22,7 @@ dp = Dispatcher()
 db = Database()
 
 queue_locks = {}
+user_states = {}
 
 
 async def get_queue_lock(queue_id: int):
@@ -425,6 +426,10 @@ async def cmd_remove_user(message: Message):
 
 @dp.callback_query(F.data == "main_menu")
 async def callback_main_menu(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id in user_states:
+        del user_states[user_id]
+    
     await callback.message.edit_text(
         "📋 Главное меню\n\nВыбери действие:",
         reply_markup=create_main_menu_keyboard()
@@ -672,8 +677,94 @@ async def callback_help(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data == "create_queue")
+async def callback_create_queue(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    user_states[user_id] = "waiting_queue_name"
+    
+    await callback.message.edit_text(
+        "📋 Создание новой очереди\n\n✍️ Отправь название очереди текстом (без команд):\n\nНапример: Лабораторная по программированию",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="main_menu")]
+        ])
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("delete_queue_"))
+async def callback_delete_queue(callback: CallbackQuery):
+    queue_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    
+    lock = await get_queue_lock(queue_id)
+    async with lock:
+        try:
+            success = await db.delete_queue(queue_id, user_id)
+            if success:
+                await callback.message.edit_text(
+                    "✅ Очередь удалена!",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+                    ])
+                )
+            else:
+                await callback.answer("❌ Очередь не найдена или ты не являешься её создателем", show_alert=True)
+        except Exception as e:
+            logger.error(f"Ошибка при удалении очереди: {e}")
+            await callback.answer("❌ Произошла ошибка", show_alert=True)
+    
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("remove_user_"))
+async def callback_remove_user(callback: CallbackQuery):
+    queue_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    
+    await callback.message.edit_text(
+        f"👤 Удаление участника из очереди\n\nОтправь команду:\n/remove_user {queue_id} <user_id>\n\nГде <user_id> - ID пользователя, которого нужно удалить.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data=f"queue_info_{queue_id}")]
+        ])
+    )
+    await callback.answer()
+
+
 @dp.message()
 async def handle_unknown_message(message: Message):
+    user_id = message.from_user.id
+    
+    if user_id in user_states and user_states[user_id] == "waiting_queue_name":
+        queue_name = message.text.strip()
+        if not queue_name:
+            await message.answer("❌ Название очереди не может быть пустым. Попробуй еще раз:")
+            return
+        
+        if len(queue_name) > 100:
+            await message.answer("❌ Название очереди слишком длинное (максимум 100 символов). Попробуй еще раз:")
+            return
+        
+        try:
+            queue_id = await db.create_queue(queue_name, user_id)
+            del user_states[user_id]
+            
+            success_text = f"✅ Очередь '{queue_name}' создана!\n\n🆔 ID очереди: {queue_id}\n⏰ Автоматически удалится через 24 часа\n\n👥 Поделись ID с участниками, чтобы они могли присоединиться!"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
+                [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+            ])
+            
+            await message.answer(success_text, reply_markup=keyboard)
+            await notify_all_users_about_new_queue(queue_name, queue_id)
+            
+        except Exception as e:
+            logger.error(f"Ошибка при создании очереди: {e}")
+            await message.answer("❌ Произошла ошибка при создании очереди. Попробуй позже.")
+            if user_id in user_states:
+                del user_states[user_id]
+        return
+    
     help_text = """🤔 Не понял, что ты хочешь сделать.
 
 📋 Доступные команды:
