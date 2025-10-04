@@ -216,11 +216,8 @@ async def cmd_join_queue(message: Message):
             
             updated_text = f"✅ Ты добавлен в очередь '{queue.name}'!\n\n🎯 Позиция: {position} из {total_members}"
             
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
-                [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
-                [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
-            ])
+            is_creator = queue.creator_id == user_id
+            keyboard = create_queue_actions_keyboard(queue_id, user_id, is_creator)
             
             await message.answer(updated_text, reply_markup=keyboard)
             
@@ -561,19 +558,27 @@ async def callback_queue_info(callback: CallbackQuery):
             if len(members) > 10:
                 response += f"... и еще {len(members) - 10} участников"
         
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+        
+        if not is_member:
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text="✅ Встать в очередь", callback_data=f"join_{queue_id}")])
+        
+        keyboard.inline_keyboard.extend([
+            [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
+            [InlineKeyboardButton(text="⏭️ Вызвать следующего", callback_data=f"next_{queue_id}")]
+        ])
+        
         if is_member:
-            keyboard = create_queue_actions_keyboard(queue_id, callback.from_user.id, is_creator)
-        else:
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Встать в очередь", callback_data=f"join_{queue_id}")],
-                [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")]
+            keyboard.inline_keyboard.extend([
+                [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
+                [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
             ])
-            if is_creator:
-                keyboard.inline_keyboard.extend([
-                    [InlineKeyboardButton(text="⏭️ Следующий", callback_data=f"next_{queue_id}")],
-                    [InlineKeyboardButton(text="👤 Удалить участника", callback_data=f"remove_user_{queue_id}")],
-                    [InlineKeyboardButton(text="🗑️ Удалить очередь", callback_data=f"delete_queue_{queue_id}")]
-                ])
+        
+        if is_creator:
+            keyboard.inline_keyboard.extend([
+                [InlineKeyboardButton(text="👤 Удалить участника", callback_data=f"remove_user_{queue_id}")],
+                [InlineKeyboardButton(text="🗑️ Удалить очередь", callback_data=f"delete_queue_{queue_id}")]
+            ])
         
         keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="list_queues")])
         
@@ -636,11 +641,8 @@ async def callback_join_queue(callback: CallbackQuery):
             
             updated_text = f"✅ Ты добавлен в очередь '{queue.name}'!\n\n🎯 Позиция: {position} из {total_members}"
             
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
-                [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
-                [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
-            ])
+            is_creator = queue.creator_id == user_id
+            keyboard = create_queue_actions_keyboard(queue_id, user_id, is_creator)
             
             await callback.message.edit_text(updated_text, reply_markup=keyboard)
             await callback.answer(f"✅ Ты добавлен в очередь на позицию {position}!")
@@ -891,11 +893,8 @@ async def handle_unknown_message(message: Message):
                 
                 success_text = f"✅ Ты добавлен в очередь '{queue.name}'!\n\n🎯 Позиция: {position} из {total_members}"
                 
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
-                    [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
-                    [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
-                ])
+                is_creator = queue.creator_id == user_id
+                keyboard = create_queue_actions_keyboard(queue_id, user_id, is_creator)
                 
                 await message.delete()
                 await message.answer(success_text, reply_markup=keyboard)
