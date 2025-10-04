@@ -297,6 +297,31 @@ async def cmd_list_queues(message: Message):
         await message.answer("Произошла ошибка. Попробуй позже.")
 
 
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = """ℹ️ Помощь по боту
+
+📋 Основные команды:
+/start - регистрация и главное меню
+/create_queue <название> - создать очередь
+/join <queue_id> - встать в очередь
+/next <queue_id> - вызвать следующего (создатель)
+/status <queue_id> - твоя позиция
+/leave <queue_id> - выйти из очереди
+/view_queue <queue_id> - посмотреть очередь
+/delete_queue <queue_id> - удалить очередь (создатель)
+/remove_user <queue_id> <user_id> - удалить участника (создатель)
+
+👆 Или используй кнопки для удобства!"""
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")],
+        [InlineKeyboardButton(text="📝 Список очередей", callback_data="list_queues")]
+    ])
+    
+    await message.answer(help_text, reply_markup=keyboard)
+
+
 @dp.message(Command("view_queue"))
 async def cmd_view_queue(message: Message):
     try:
@@ -645,6 +670,31 @@ async def callback_help(callback: CallbackQuery):
     
     await callback.message.edit_text(help_text, reply_markup=keyboard)
     await callback.answer()
+
+
+@dp.message()
+async def handle_unknown_message(message: Message):
+    help_text = """🤔 Не понял, что ты хочешь сделать.
+
+📋 Доступные команды:
+/start - главное меню
+/create_queue <название> - создать очередь
+/join <queue_id> - встать в очередь
+/next <queue_id> - вызвать следующего (создатель)
+/status <queue_id> - твоя позиция
+/leave <queue_id> - выйти из очереди
+/view_queue <queue_id> - посмотреть очередь
+/delete_queue <queue_id> - удалить очередь (создатель)
+/remove_user <queue_id> <user_id> - удалить участника (создатель)
+
+👆 Или используй /start для доступа к интерактивному меню!"""
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")],
+        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")]
+    ])
+    
+    await message.answer(help_text, reply_markup=keyboard)
 
 
 async def cleanup_task():
