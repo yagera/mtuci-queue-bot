@@ -63,7 +63,7 @@ async def cmd_create_queue(message: Message):
     
     try:
         queue_id = await db.create_queue(queue_name, user_id)
-        await message.answer(f"Очередь '{queue_name}' создана! ID очереди: {queue_id}")
+        await message.answer(f"Очередь '{queue_name}' создана! ID очереди: {queue_id}\nОчередь автоматически удалится через 24 часа.")
     except Exception as e:
         logger.error(f"Ошибка при создании очереди: {e}")
         await message.answer("Произошла ошибка при создании очереди. Попробуй позже.")
@@ -225,10 +225,126 @@ async def cmd_list_queues(message: Message):
         await message.answer("Произошла ошибка. Попробуй позже.")
 
 
+@dp.message(Command("view_queue"))
+async def cmd_view_queue(message: Message):
+    try:
+        queue_id = int(message.text.replace("/view_queue", "").strip())
+    except ValueError:
+        await message.answer("Укажи корректный ID очереди: /view_queue <queue_id>")
+        return
+    
+    try:
+        queue = await db.get_queue(queue_id)
+        if not queue:
+            await message.answer("Очередь с таким ID не найдена или истекла.")
+            return
+        
+        members = await db.get_queue_members(queue_id)
+        if not members:
+            await message.answer(f"Очередь '{queue.name}' пуста.")
+            return
+        
+        response = f"Очередь: {queue.name}\n\n"
+        for member in members:
+            response += f"{member.position}. {member.user.username}\n"
+        
+        await message.answer(response)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при просмотре очереди: {e}")
+        await message.answer("Произошла ошибка. Попробуй позже.")
+
+
+@dp.message(Command("delete_queue"))
+async def cmd_delete_queue(message: Message):
+    user_id = message.from_user.id
+    
+    try:
+        queue_id = int(message.text.replace("/delete_queue", "").strip())
+    except ValueError:
+        await message.answer("Укажи корректный ID очереди: /delete_queue <queue_id>")
+        return
+    
+    lock = await get_queue_lock(queue_id)
+    async with lock:
+        try:
+            success = await db.delete_queue(queue_id, user_id)
+            if success:
+                await message.answer("Очередь удалена.")
+            else:
+                await message.answer("Очередь не найдена или ты не являешься её создателем.")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении очереди: {e}")
+            await message.answer("Произошла ошибка. Попробуй позже.")
+
+
+@dp.message(Command("remove_user"))
+async def cmd_remove_user(message: Message):
+    user_id = message.from_user.id
+    
+    try:
+        parts = message.text.replace("/remove_user", "").strip().split()
+        if len(parts) != 2:
+            await message.answer("Формат: /remove_user <queue_id> <user_id>")
+            return
+        
+        queue_id = int(parts[0])
+        target_user_id = int(parts[1])
+    except ValueError:
+        await message.answer("Укажи корректные ID: /remove_user <queue_id> <user_id>")
+        return
+    
+    lock = await get_queue_lock(queue_id)
+    async with lock:
+        try:
+            queue = await db.get_queue(queue_id)
+            if not queue:
+                await message.answer("Очередь с таким ID не найдена или истекла.")
+                return
+            
+            if queue.creator_id != user_id:
+                await message.answer("Только создатель очереди может удалять участников.")
+                return
+            
+            success = await db.remove_user_from_queue(queue_id, target_user_id, user_id)
+            if success:
+                target_user = await db.get_user(target_user_id)
+                username = target_user.username if target_user else f"ID{target_user_id}"
+                await message.answer(f"Пользователь {username} удален из очереди.")
+                
+                try:
+                    await bot.send_message(
+                        target_user_id,
+                        f"Ты был удален из очереди '{queue.name}'."
+                    )
+                except:
+                    pass
+            else:
+                await message.answer("Пользователь не найден в очереди.")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении пользователя: {e}")
+            await message.answer("Произошла ошибка. Попробуй позже.")
+
+
+async def cleanup_task():
+    while True:
+        try:
+            await db.cleanup_expired_queues()
+            await asyncio.sleep(3600)
+        except Exception as e:
+            logger.error(f"Ошибка при очистке устаревших очередей: {e}")
+            await asyncio.sleep(3600)
+
 async def main():
     await db.init_db()
-    logger.info("Запуск бота...")
-    await dp.start_polling(bot)
+    
+    cleanup_task_handle = asyncio.create_task(cleanup_task())
+    
+    try:
+        logger.info("Запуск бота...")
+        await dp.start_polling(bot)
+    finally:
+        cleanup_task_handle.cancel()
 
 
 if __name__ == "__main__":

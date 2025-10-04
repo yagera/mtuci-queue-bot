@@ -16,6 +16,7 @@ class Queue:
     name: str
     creator_id: int
     created_at: datetime
+    expires_at: datetime
 
 
 @dataclass
