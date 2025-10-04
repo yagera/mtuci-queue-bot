@@ -72,6 +72,17 @@ class Database:
                     return User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[2]))
                 return None
     
+    async def get_all_users(self) -> List[User]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT id, username, created_at FROM users"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [
+                    User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[2]))
+                    for row in rows
+                ]
+    
     async def create_queue(self, name: str, creator_id: int) -> int:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
