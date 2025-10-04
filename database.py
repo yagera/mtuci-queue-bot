@@ -50,12 +50,11 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_queue_members_position ON queue_members (queue_id, position)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_queues_expires_at ON queues (expires_at)")
             
-            await db.execute("ALTER TABLE users ADD COLUMN surname TEXT")
-            await db.commit()
-        except:
-            pass
-        
-        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN surname TEXT")
+            except:
+                pass
+            
             await db.commit()
             logger.info("База данных инициализирована")
     
@@ -193,7 +192,7 @@ class Database:
     async def get_queue_member(self, queue_id: int, user_id: int) -> Optional[QueueMember]:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
-                SELECT qm.queue_id, qm.user_id, qm.position, qm.joined_at, u.username
+                SELECT qm.queue_id, qm.user_id, qm.position, qm.joined_at, u.username, u.surname
                 FROM queue_members qm
                 JOIN users u ON qm.user_id = u.id
                 WHERE qm.queue_id = ? AND qm.user_id = ?
@@ -205,14 +204,14 @@ class Database:
                         user_id=row[1],
                         position=row[2],
                         joined_at=datetime.fromisoformat(row[3]),
-                        user=User(id=row[1], username=row[4], surname="", created_at=datetime.now())
+                        user=User(id=row[1], username=row[4], surname=row[5] or "", created_at=datetime.now())
                     )
                 return None
     
     async def get_next_in_queue(self, queue_id: int) -> Optional[QueueMember]:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
-                SELECT qm.queue_id, qm.user_id, qm.position, qm.joined_at, u.username
+                SELECT qm.queue_id, qm.user_id, qm.position, qm.joined_at, u.username, u.surname
                 FROM queue_members qm
                 JOIN users u ON qm.user_id = u.id
                 WHERE qm.queue_id = ?
@@ -226,7 +225,7 @@ class Database:
                         user_id=row[1],
                         position=row[2],
                         joined_at=datetime.fromisoformat(row[3]),
-                        user=User(id=row[1], username=row[4], surname="", created_at=datetime.now())
+                        user=User(id=row[1], username=row[4], surname=row[5] or "", created_at=datetime.now())
                     )
                 return None
     
@@ -241,7 +240,7 @@ class Database:
     async def get_queue_members(self, queue_id: int) -> List[QueueMember]:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
-                SELECT qm.queue_id, qm.user_id, qm.position, qm.joined_at, u.username
+                SELECT qm.queue_id, qm.user_id, qm.position, qm.joined_at, u.username, u.surname
                 FROM queue_members qm
                 JOIN users u ON qm.user_id = u.id
                 WHERE qm.queue_id = ?
@@ -254,7 +253,7 @@ class Database:
                         user_id=row[1],
                         position=row[2],
                         joined_at=datetime.fromisoformat(row[3]),
-                        user=User(id=row[1], username=row[4], created_at=datetime.now())
+                        user=User(id=row[1], username=row[4], surname=row[5] or "", created_at=datetime.now())
                     )
                     for row in rows
                 ]
