@@ -63,7 +63,7 @@ def create_main_menu_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-async def notify_all_users_about_new_queue(queue_name: str, queue_id: int):
+async def notify_all_users_about_new_queue(queue_name: str, queue_id: int, exclude_user: int = None):
     try:
         users = await db.get_all_users()
         notification_text = f"🔔 Новая очередь создана!\n\n📋 {queue_name}\n🆔 ID: {queue_id}\n\n👆 Нажми кнопку, чтобы присоединиться!"
@@ -71,6 +71,9 @@ async def notify_all_users_about_new_queue(queue_name: str, queue_id: int):
         keyboard = create_join_queue_keyboard(queue_id)
         
         for user in users:
+            if exclude_user and user.id == exclude_user:
+                continue  # Пропускаем исключенного пользователя
+            
             try:
                 await bot.send_message(user.id, notification_text, reply_markup=keyboard)
             except Exception as e:
@@ -79,10 +82,17 @@ async def notify_all_users_about_new_queue(queue_name: str, queue_id: int):
         logger.error(f"Ошибка при отправке уведомлений о новой очереди: {e}")
 
 
-async def notify_user_about_queue_position(user_id: int, queue_name: str, position: int, total: int):
+async def notify_user_about_queue_position(user_id: int, queue_name: str, position: int, total: int, queue_id: int):
     try:
         notification_text = f"📍 Ты добавлен в очередь!\n\n📋 {queue_name}\n🎯 Позиция: {position} из {total}"
-        await bot.send_message(user_id, notification_text)
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
+            [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
+            [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
+        ])
+        
+        await bot.send_message(user_id, notification_text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Не удалось отправить уведомление о позиции пользователю {user_id}: {e}")
 
@@ -134,13 +144,12 @@ async def cmd_create_queue(message: Message):
         success_text = f"✅ Очередь '{queue_name}' создана!\n\n🆔 ID очереди: {queue_id}\n⏰ Автоматически удалится через 24 часа\n\n👥 Поделись ID с участниками, чтобы они могли присоединиться!"
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Встать в очередь", callback_data=f"join_{queue_id}")],
             [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
             [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
         ])
         
         await message.answer(success_text, reply_markup=keyboard)
-        
-        await notify_all_users_about_new_queue(queue_name, queue_id)
         
     except Exception as e:
         logger.error(f"Ошибка при создании очереди: {e}")
@@ -177,8 +186,16 @@ async def cmd_join_queue(message: Message):
             
             position = await db.add_to_queue(queue_id, user_id)
             total_members = await db.get_queue_member_count(queue_id)
-            await message.answer(f"✅ Ты добавлен в очередь '{queue.name}' на позицию {position}!")
-            await notify_user_about_queue_position(user_id, queue.name, position, total_members)
+            
+            updated_text = f"✅ Ты добавлен в очередь '{queue.name}'!\n\n🎯 Позиция: {position} из {total_members}"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
+                [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
+                [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
+            ])
+            
+            await message.answer(updated_text, reply_markup=keyboard)
             
         except Exception as e:
             logger.error(f"Ошибка при добавлении в очередь: {e}")
@@ -271,7 +288,7 @@ async def cmd_leave_queue(message: Message):
                 return
             
             await db.remove_from_queue(queue_id, user_id)
-            await message.answer("Ты покинул очередь.")
+            await message.answer("✅ Ты покинул очередь.")
             
         except Exception as e:
             logger.error(f"Ошибка при выходе из очереди: {e}")
@@ -311,7 +328,7 @@ async def cmd_help(message: Message):
 /leave <queue_id> - выйти из очереди
 /view_queue <queue_id> - посмотреть очередь
 /delete_queue <queue_id> - удалить очередь (создатель)
-/remove_user <queue_id> <user_id> - удалить участника (создатель)
+/remove_user <queue_id> <username> - удалить участника (создатель)
 
 👆 Или используй кнопки для удобства!"""
     
@@ -383,13 +400,13 @@ async def cmd_remove_user(message: Message):
     try:
         parts = message.text.replace("/remove_user", "").strip().split()
         if len(parts) != 2:
-            await message.answer("Формат: /remove_user <queue_id> <user_id>")
+            await message.answer("Формат: /remove_user <queue_id> <username>")
             return
         
         queue_id = int(parts[0])
-        target_user_id = int(parts[1])
+        target_username = parts[1]
     except ValueError:
-        await message.answer("Укажи корректные ID: /remove_user <queue_id> <user_id>")
+        await message.answer("Укажи корректные данные: /remove_user <queue_id> <username>")
         return
     
     lock = await get_queue_lock(queue_id)
@@ -404,16 +421,19 @@ async def cmd_remove_user(message: Message):
                 await message.answer("Только создатель очереди может удалять участников.")
                 return
             
-            success = await db.remove_user_from_queue(queue_id, target_user_id, user_id)
+            target_user = await db.get_user_by_username(target_username)
+            if not target_user:
+                await message.answer(f"Пользователь с именем '{target_username}' не найден.")
+                return
+            
+            success = await db.remove_user_from_queue(queue_id, target_user.id, user_id)
             if success:
-                target_user = await db.get_user(target_user_id)
-                username = target_user.username if target_user else f"ID{target_user_id}"
-                await message.answer(f"Пользователь {username} удален из очереди.")
+                await message.answer(f"Пользователь {target_username} удален из очереди.")
                 
                 try:
                     await bot.send_message(
-                        target_user_id,
-                        f"Ты был удален из очереди '{queue.name}'."
+                        target_user.id,
+                        f"⚠️ Ты был удален из очереди '{queue.name}' администратором."
                     )
                 except:
                     pass
@@ -452,12 +472,21 @@ async def callback_list_queues(callback: CallbackQuery):
         
         response = "📝 Доступные очереди:\n\n"
         keyboard_buttons = []
+        user_id = callback.from_user.id
         
         for queue in queues:
             member_count = await db.get_queue_member_count(queue.id)
             response += f"🆔 {queue.id} - {queue.name} ({member_count} участников)\n"
+            
+            is_member = await db.get_queue_member(queue.id, user_id) is not None
+            
+            if is_member:
+                button_text = f"📋 {queue.name} (ты в очереди)"
+            else:
+                button_text = f"📋 {queue.name}"
+            
             keyboard_buttons.append([InlineKeyboardButton(
-                text=f"📋 {queue.name}",
+                text=button_text,
                 callback_data=f"queue_info_{queue.id}"
             )])
         
@@ -486,6 +515,8 @@ async def callback_queue_info(callback: CallbackQuery):
         
         members = await db.get_queue_members(queue_id)
         is_creator = queue.creator_id == callback.from_user.id
+        user_id = callback.from_user.id
+        is_member = any(member.user_id == user_id for member in members)
         
         response = f"📋 {queue.name}\n🆔 ID: {queue.id}\n👥 Участников: {len(members)}\n"
         
@@ -496,7 +527,20 @@ async def callback_queue_info(callback: CallbackQuery):
             if len(members) > 10:
                 response += f"... и еще {len(members) - 10} участников"
         
-        keyboard = create_queue_actions_keyboard(queue_id, callback.from_user.id, is_creator)
+        if is_member:
+            keyboard = create_queue_actions_keyboard(queue_id, callback.from_user.id, is_creator)
+        else:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Встать в очередь", callback_data=f"join_{queue_id}")],
+                [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")]
+            ])
+            if is_creator:
+                keyboard.inline_keyboard.extend([
+                    [InlineKeyboardButton(text="⏭️ Следующий", callback_data=f"next_{queue_id}")],
+                    [InlineKeyboardButton(text="👤 Удалить участника", callback_data=f"remove_user_{queue_id}")],
+                    [InlineKeyboardButton(text="🗑️ Удалить очередь", callback_data=f"delete_queue_{queue_id}")]
+                ])
+        
         keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="list_queues")])
         
         await callback.message.edit_text(response, reply_markup=keyboard)
@@ -533,8 +577,16 @@ async def callback_join_queue(callback: CallbackQuery):
             position = await db.add_to_queue(queue_id, user_id)
             total_members = await db.get_queue_member_count(queue_id)
             
+            updated_text = f"✅ Ты добавлен в очередь '{queue.name}'!\n\n🎯 Позиция: {position} из {total_members}"
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
+                [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
+                [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
+            ])
+            
+            await callback.message.edit_text(updated_text, reply_markup=keyboard)
             await callback.answer(f"✅ Ты добавлен в очередь на позицию {position}!")
-            await notify_user_about_queue_position(user_id, queue.name, position, total_members)
             
         except Exception as e:
             logger.error(f"Ошибка при добавлении в очередь: {e}")
@@ -665,7 +717,7 @@ async def callback_help(callback: CallbackQuery):
 /leave <queue_id> - выйти из очереди
 /view_queue <queue_id> - посмотреть очередь
 /delete_queue <queue_id> - удалить очередь (создатель)
-/remove_user <queue_id> <user_id> - удалить участника (создатель)
+/remove_user <queue_id> <username> - удалить участника (создатель)
 
 👆 Или используй кнопки для удобства!"""
     
@@ -680,7 +732,10 @@ async def callback_help(callback: CallbackQuery):
 @dp.callback_query(F.data == "create_queue")
 async def callback_create_queue(callback: CallbackQuery):
     user_id = callback.from_user.id
-    user_states[user_id] = "waiting_queue_name"
+    user_states[user_id] = {
+        "state": "waiting_queue_name",
+        "instruction_message_id": callback.message.message_id
+    }
     
     await callback.message.edit_text(
         "📋 Создание новой очереди\n\n✍️ Отправь название очереди текстом (без команд):\n\nНапример: Лабораторная по программированию",
@@ -722,7 +777,7 @@ async def callback_remove_user(callback: CallbackQuery):
     user_id = callback.from_user.id
     
     await callback.message.edit_text(
-        f"👤 Удаление участника из очереди\n\nОтправь команду:\n/remove_user {queue_id} <user_id>\n\nГде <user_id> - ID пользователя, которого нужно удалить.",
+        f"👤 Удаление участника из очереди\n\nОтправь команду:\n/remove_user {queue_id} <username>\n\nГде <username> - имя пользователя, которого нужно удалить.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Назад", callback_data=f"queue_info_{queue_id}")]
         ])
@@ -734,7 +789,7 @@ async def callback_remove_user(callback: CallbackQuery):
 async def handle_unknown_message(message: Message):
     user_id = message.from_user.id
     
-    if user_id in user_states and user_states[user_id] == "waiting_queue_name":
+    if user_id in user_states and user_states[user_id].get("state") == "waiting_queue_name":
         queue_name = message.text.strip()
         if not queue_name:
             await message.answer("❌ Название очереди не может быть пустым. Попробуй еще раз:")
@@ -746,17 +801,26 @@ async def handle_unknown_message(message: Message):
         
         try:
             queue_id = await db.create_queue(queue_name, user_id)
+            
+            instruction_message_id = user_states[user_id].get("instruction_message_id")
+            if instruction_message_id:
+                try:
+                    await bot.delete_message(user_id, instruction_message_id)
+                except:
+                    pass
+            
             del user_states[user_id]
             
             success_text = f"✅ Очередь '{queue_name}' создана!\n\n🆔 ID очереди: {queue_id}\n⏰ Автоматически удалится через 24 часа\n\n👥 Поделись ID с участниками, чтобы они могли присоединиться!"
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Встать в очередь", callback_data=f"join_{queue_id}")],
                 [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
                 [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
             ])
             
+            await message.delete()
             await message.answer(success_text, reply_markup=keyboard)
-            await notify_all_users_about_new_queue(queue_name, queue_id)
             
         except Exception as e:
             logger.error(f"Ошибка при создании очереди: {e}")
@@ -776,7 +840,7 @@ async def handle_unknown_message(message: Message):
 /leave <queue_id> - выйти из очереди
 /view_queue <queue_id> - посмотреть очередь
 /delete_queue <queue_id> - удалить очередь (создатель)
-/remove_user <queue_id> <user_id> - удалить участника (создатель)
+/remove_user <queue_id> <username> - удалить участника (создатель)
 
 👆 Или используй /start для доступа к интерактивному меню!"""
     
