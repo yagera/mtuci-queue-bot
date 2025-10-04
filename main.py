@@ -361,7 +361,10 @@ async def cmd_view_queue(message: Message):
         
         response = f"Очередь: {queue.name}\n\n"
         for member in members:
-            response += f"{member.position}. {member.user.username}\n"
+            if member.user.surname:
+                response += f"{member.position}. {member.user.surname} @{member.user.username}\n"
+            else:
+                response += f"{member.position}. @{member.user.username}\n"
         
         await message.answer(response)
         
@@ -523,7 +526,10 @@ async def callback_queue_info(callback: CallbackQuery):
         if members:
             response += "\n👥 Участники:\n"
             for member in members[:10]:
-                response += f"{member.position}. {member.user.username}\n"
+                if member.user.surname:
+                    response += f"{member.position}. {member.user.surname} @{member.user.username}\n"
+                else:
+                    response += f"{member.position}. @{member.user.username}\n"
             if len(members) > 10:
                 response += f"... и еще {len(members) - 10} участников"
         
@@ -572,6 +578,22 @@ async def callback_join_queue(callback: CallbackQuery):
             existing_member = await db.get_queue_member(queue_id, user_id)
             if existing_member:
                 await callback.answer("⚠️ Ты уже в этой очереди!", show_alert=True)
+                return
+            
+            if not user.surname:
+                user_states[user_id] = {
+                    "state": "waiting_surname",
+                    "queue_id": queue_id,
+                    "join_message_id": callback.message.message_id
+                }
+                
+                await callback.message.edit_text(
+                    f"👤 Введите вашу фамилию для очереди '{queue.name}':",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"queue_info_{queue_id}")]
+                    ])
+                )
+                await callback.answer()
                 return
             
             position = await db.add_to_queue(queue_id, user_id)
@@ -662,7 +684,10 @@ async def callback_view_queue(callback: CallbackQuery):
         
         response = f"📋 {queue.name}\n\n"
         for member in members:
-            response += f"{member.position}. {member.user.username}\n"
+            if member.user.surname:
+                response += f"{member.position}. {member.user.surname} @{member.user.username}\n"
+            else:
+                response += f"{member.position}. @{member.user.username}\n"
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Назад", callback_data=f"queue_info_{queue_id}")]
@@ -789,45 +814,94 @@ async def callback_remove_user(callback: CallbackQuery):
 async def handle_unknown_message(message: Message):
     user_id = message.from_user.id
     
-    if user_id in user_states and user_states[user_id].get("state") == "waiting_queue_name":
-        queue_name = message.text.strip()
-        if not queue_name:
-            await message.answer("❌ Название очереди не может быть пустым. Попробуй еще раз:")
-            return
+    if user_id in user_states:
+        state = user_states[user_id].get("state")
         
-        if len(queue_name) > 100:
-            await message.answer("❌ Название очереди слишком длинное (максимум 100 символов). Попробуй еще раз:")
-            return
-        
-        try:
-            queue_id = await db.create_queue(queue_name, user_id)
+        if state == "waiting_surname":
+            surname = message.text.strip()
+            if not surname:
+                await message.answer("❌ Фамилия не может быть пустой. Попробуй еще раз:")
+                return
             
-            instruction_message_id = user_states[user_id].get("instruction_message_id")
-            if instruction_message_id:
+            if len(surname) > 50:
+                await message.answer("❌ Фамилия слишком длинная (максимум 50 символов). Попробуй еще раз:")
+                return
+            
+            try:
+                queue_id = user_states[user_id]["queue_id"]
+                join_message_id = user_states[user_id]["join_message_id"]
+                
+                await db.update_user_surname(user_id, surname)
+                
                 try:
-                    await bot.delete_message(user_id, instruction_message_id)
+                    await bot.delete_message(user_id, join_message_id)
                 except:
                     pass
-            
-            del user_states[user_id]
-            
-            success_text = f"✅ Очередь '{queue_name}' создана!\n\n🆔 ID очереди: {queue_id}\n⏰ Автоматически удалится через 24 часа\n\n👥 Поделись ID с участниками, чтобы они могли присоединиться!"
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Встать в очередь", callback_data=f"join_{queue_id}")],
-                [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
-                [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
-            ])
-            
-            await message.delete()
-            await message.answer(success_text, reply_markup=keyboard)
-            
-        except Exception as e:
-            logger.error(f"Ошибка при создании очереди: {e}")
-            await message.answer("❌ Произошла ошибка при создании очереди. Попробуй позже.")
-            if user_id in user_states:
+                
                 del user_states[user_id]
-        return
+                
+                user = await db.get_user(user_id)
+                position = await db.add_to_queue(queue_id, user_id)
+                total_members = await db.get_queue_member_count(queue_id)
+                queue = await db.get_queue(queue_id)
+                
+                success_text = f"✅ Ты добавлен в очередь '{queue.name}'!\n\n🎯 Позиция: {position} из {total_members}"
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
+                    [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
+                    [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
+                ])
+                
+                await message.delete()
+                await message.answer(success_text, reply_markup=keyboard)
+                
+            except Exception as e:
+                logger.error(f"Ошибка при добавлении в очередь: {e}")
+                await message.answer("❌ Произошла ошибка при добавлении в очередь. Попробуй позже.")
+                if user_id in user_states:
+                    del user_states[user_id]
+            return
+        
+        elif state == "waiting_queue_name":
+            queue_name = message.text.strip()
+            if not queue_name:
+                await message.answer("❌ Название очереди не может быть пустым. Попробуй еще раз:")
+                return
+        
+            if len(queue_name) > 100:
+                await message.answer("❌ Название очереди слишком длинное (максимум 100 символов). Попробуй еще раз:")
+                return
+            
+            try:
+                queue_id = await db.create_queue(queue_name, user_id)
+                
+                instruction_message_id = user_states[user_id].get("instruction_message_id")
+                if instruction_message_id:
+                    try:
+                        await bot.delete_message(user_id, instruction_message_id)
+                    except:
+                        pass
+                
+                del user_states[user_id]
+                
+                success_text = f"✅ Очередь '{queue_name}' создана!\n\n🆔 ID очереди: {queue_id}\n⏰ Автоматически удалится через 24 часа\n\n👥 Поделись ID с участниками, чтобы они могли присоединиться!"
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Встать в очередь", callback_data=f"join_{queue_id}")],
+                    [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
+                    [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+                ])
+                
+                await message.delete()
+                await message.answer(success_text, reply_markup=keyboard)
+                
+            except Exception as e:
+                logger.error(f"Ошибка при создании очереди: {e}")
+                await message.answer("❌ Произошла ошибка при создании очереди. Попробуй позже.")
+                if user_id in user_states:
+                    del user_states[user_id]
+            return
     
     help_text = """🤔 Не понял, что ты хочешь сделать.
 

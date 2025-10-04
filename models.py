@@ -7,6 +7,7 @@ from typing import Optional
 class User:
     id: int
     username: str
+    surname: str
     created_at: datetime
 
 

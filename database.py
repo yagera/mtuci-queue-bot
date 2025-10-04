@@ -18,6 +18,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY,
                     username TEXT NOT NULL,
+                    surname TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -49,50 +50,64 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_queue_members_position ON queue_members (queue_id, position)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_queues_expires_at ON queues (expires_at)")
             
+            await db.execute("ALTER TABLE users ADD COLUMN surname TEXT")
+            await db.commit()
+        except:
+            pass
+        
+        async with aiosqlite.connect(self.db_path) as db:
             await db.commit()
             logger.info("База данных инициализирована")
     
     async def create_user(self, user_id: int, username: str) -> User:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT INTO users (id, username) VALUES (?, ?)",
-                (user_id, username)
+                "INSERT INTO users (id, username, surname) VALUES (?, ?, ?)",
+                (user_id, username, "")
             )
             await db.commit()
-            return User(id=user_id, username=username, created_at=datetime.now())
+            return User(id=user_id, username=username, surname="", created_at=datetime.now())
     
     async def get_user(self, user_id: int) -> Optional[User]:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT id, username, created_at FROM users WHERE id = ?",
+                "SELECT id, username, surname, created_at FROM users WHERE id = ?",
                 (user_id,)
             ) as cursor:
                 row = await cursor.fetchone()
                 if row:
-                    return User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[2]))
+                    return User(id=row[0], username=row[1], surname=row[2] or "", created_at=datetime.fromisoformat(row[3]))
                 return None
     
     async def get_all_users(self) -> List[User]:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT id, username, created_at FROM users"
+                "SELECT id, username, surname, created_at FROM users"
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [
-                    User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[2]))
+                    User(id=row[0], username=row[1], surname=row[2] or "", created_at=datetime.fromisoformat(row[3]))
                     for row in rows
                 ]
     
     async def get_user_by_username(self, username: str) -> Optional[User]:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT id, username, created_at FROM users WHERE username = ?",
+                "SELECT id, username, surname, created_at FROM users WHERE username = ?",
                 (username,)
             ) as cursor:
                 row = await cursor.fetchone()
                 if row:
-                    return User(id=row[0], username=row[1], created_at=datetime.fromisoformat(row[2]))
+                    return User(id=row[0], username=row[1], surname=row[2] or "", created_at=datetime.fromisoformat(row[3]))
                 return None
+    
+    async def update_user_surname(self, user_id: int, surname: str):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE users SET surname = ? WHERE id = ?",
+                (surname, user_id)
+            )
+            await db.commit()
     
     async def create_queue(self, name: str, creator_id: int) -> int:
         async with aiosqlite.connect(self.db_path) as db:
@@ -190,7 +205,7 @@ class Database:
                         user_id=row[1],
                         position=row[2],
                         joined_at=datetime.fromisoformat(row[3]),
-                        user=User(id=row[1], username=row[4], created_at=datetime.now())
+                        user=User(id=row[1], username=row[4], surname="", created_at=datetime.now())
                     )
                 return None
     
@@ -211,7 +226,7 @@ class Database:
                         user_id=row[1],
                         position=row[2],
                         joined_at=datetime.fromisoformat(row[3]),
-                        user=User(id=row[1], username=row[4], created_at=datetime.now())
+                        user=User(id=row[1], username=row[4], surname="", created_at=datetime.now())
                     )
                 return None
     
