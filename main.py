@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -23,6 +24,8 @@ db = Database()
 
 queue_locks = {}
 user_states = {}
+user_last_action = {}
+processed_callbacks = set()
 
 
 async def get_queue_lock(queue_id: int):
@@ -30,17 +33,36 @@ async def get_queue_lock(queue_id: int):
         queue_locks[queue_id] = asyncio.Lock()
     return queue_locks[queue_id]
 
+def check_rate_limit(user_id: int, action: str, limit_seconds: int = 2) -> bool:
+    current_time = time.time()
+    key = f"{user_id}_{action}"
+    
+    if key in user_last_action:
+        if current_time - user_last_action[key] < limit_seconds:
+            return False
+    
+    user_last_action[key] = current_time
+    return True
+
+def check_callback_duplicate(callback_id: str) -> bool:
+    if callback_id in processed_callbacks:
+        return True
+    processed_callbacks.add(callback_id)
+    if len(processed_callbacks) > 1000:
+        processed_callbacks.clear()
+    return False
+
 
 def create_queue_actions_keyboard(queue_id: int, user_id: int, is_creator: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="👀 Посмотреть очередь", callback_data=f"view_queue_{queue_id}")],
         [InlineKeyboardButton(text="📊 Мой статус", callback_data=f"status_{queue_id}")],
-        [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")]
+        [InlineKeyboardButton(text="🚪 Выйти из очереди", callback_data=f"leave_{queue_id}")],
+        [InlineKeyboardButton(text="⏭️ Вызвать следующего", callback_data=f"next_{queue_id}")]
     ]
     
     if is_creator:
         buttons.extend([
-            [InlineKeyboardButton(text="⏭️ Следующий", callback_data=f"next_{queue_id}")],
             [InlineKeyboardButton(text="👤 Удалить участника", callback_data=f"remove_user_{queue_id}")],
             [InlineKeyboardButton(text="🗑️ Удалить очередь", callback_data=f"delete_queue_{queue_id}")]
         ])
@@ -72,12 +94,13 @@ async def notify_all_users_about_new_queue(queue_name: str, queue_id: int, exclu
         
         for user in users:
             if exclude_user and user.id == exclude_user:
-                continue  # Пропускаем исключенного пользователя
+                continue
             
             try:
                 await bot.send_message(user.id, notification_text, reply_markup=keyboard)
             except Exception as e:
                 logger.error(f"Не удалось отправить уведомление пользователю {user.id}: {e}")
+                continue
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений о новой очереди: {e}")
 
@@ -103,6 +126,7 @@ async def notify_user_about_turn(user_id: int, queue_name: str):
         await bot.send_message(user_id, notification_text)
     except Exception as e:
         logger.error(f"Не удалось отправить уведомление о вызове пользователю {user_id}: {e}")
+        pass
 
 
 @dp.message(Command("start"))
@@ -127,6 +151,9 @@ async def cmd_start(message: Message):
 
 @dp.message(Command("create_queue"))
 async def cmd_create_queue(message: Message):
+    if not check_rate_limit(message.from_user.id, "create_queue_command", 10):
+        await message.answer("⏳ Слишком часто! Подожди немного перед созданием новой очереди.")
+        return
     user_id = message.from_user.id
     
     user = await db.get_user(user_id)
@@ -204,6 +231,10 @@ async def cmd_join_queue(message: Message):
 
 @dp.message(Command("next"))
 async def cmd_next(message: Message):
+    if not check_rate_limit(message.from_user.id, "next_command", 3):
+        await message.answer("⏳ Слишком часто! Подожди немного.")
+        return
+    
     user_id = message.from_user.id
     
     try:
@@ -220,10 +251,6 @@ async def cmd_next(message: Message):
                 await message.answer("Очередь с таким ID не найдена.")
                 return
             
-            if queue.creator_id != user_id:
-                await message.answer("Только создатель очереди может вызывать следующего.")
-                return
-            
             next_member = await db.get_next_in_queue(queue_id)
             if not next_member:
                 await message.answer("Очередь пуста.")
@@ -231,7 +258,8 @@ async def cmd_next(message: Message):
             
             await db.remove_from_queue(queue_id, next_member.user_id)
             
-            await message.answer(f"✅ Участник {next_member.user.username} вызван!")
+            member_name = f"{next_member.user.surname} @{next_member.user.username}" if next_member.user.surname else f"@{next_member.user.username}"
+            await message.answer(f"✅ Участник {member_name} вызван!")
             await notify_user_about_turn(next_member.user_id, queue.name)
             
         except Exception as e:
@@ -559,6 +587,13 @@ async def callback_queue_info(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("join_"))
 async def callback_join_queue(callback: CallbackQuery):
+    if check_callback_duplicate(f"{callback.from_user.id}_{callback.data}_{callback.message.message_id}"):
+        await callback.answer("⚠️ Запрос уже обработан", show_alert=True)
+        return
+    
+    if not check_rate_limit(callback.from_user.id, "join_button", 2):
+        await callback.answer("⏳ Слишком часто! Подожди немного.", show_alert=True)
+        return
     queue_id = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
     
@@ -617,6 +652,9 @@ async def callback_join_queue(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("leave_"))
 async def callback_leave_queue(callback: CallbackQuery):
+    if not check_rate_limit(callback.from_user.id, "leave_button", 2):
+        await callback.answer("⏳ Слишком часто! Подожди немного.", show_alert=True)
+        return
     queue_id = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
     
@@ -638,6 +676,14 @@ async def callback_leave_queue(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("next_"))
 async def callback_next_user(callback: CallbackQuery):
+    if check_callback_duplicate(f"{callback.from_user.id}_{callback.data}_{callback.message.message_id}"):
+        await callback.answer("⚠️ Запрос уже обработан", show_alert=True)
+        return
+    
+    if not check_rate_limit(callback.from_user.id, "next_button", 3):
+        await callback.answer("⏳ Слишком часто! Подожди немного.", show_alert=True)
+        return
+    
     queue_id = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
     
@@ -649,17 +695,15 @@ async def callback_next_user(callback: CallbackQuery):
                 await callback.answer("❌ Очередь не найдена", show_alert=True)
                 return
             
-            if queue.creator_id != user_id:
-                await callback.answer("❌ Только создатель очереди может вызывать следующего", show_alert=True)
-                return
-            
             next_member = await db.get_next_in_queue(queue_id)
             if not next_member:
                 await callback.answer("❌ Очередь пуста", show_alert=True)
                 return
             
             await db.remove_from_queue(queue_id, next_member.user_id)
-            await callback.answer(f"✅ Участник {next_member.user.username} вызван!")
+            
+            member_name = f"{next_member.user.surname} @{next_member.user.username}" if next_member.user.surname else f"@{next_member.user.username}"
+            await callback.answer(f"✅ Участник {member_name} вызван!")
             await notify_user_about_turn(next_member.user_id, queue.name)
             
         except Exception as e:
